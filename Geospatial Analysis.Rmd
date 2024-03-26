@@ -1,0 +1,126 @@
+---
+title: "Geospatial Analysis"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+if (!require(here)) {install.packages("here"); library("here")}
+if (!require(sf)) {install.packages("sf"); library("sf")}
+if (!require(dplyr)) {install.packages("dplyr"); library("dplyr")}
+if (!require(tmaptools)) {install.packages("tmaptools"); library("tmaptools")}
+if (!require(tmap)) {install.packages("tmap"); library("tmap")}
+if (!require(knitr)) {install.packages("knitr"); library("knitr")}
+if (!require(wk)) {install.packages("wk"); library("wk")}
+if (!require(stringr)) {install.packages("stringr"); library("stringr")}
+if (!require(ggmap)) {install.packages("ggmap"); library("ggmap")}
+if (!require(leaflet)) {install.packages("leaflet"); library("leaflet")}
+if (!require(leaflet.extras)) {install.packages("leaflet.extras"); library("leaflet.extras")}
+if (!require(htmlwidgets)) {install.packages("htmlwidgets"); library("htmlwidgets")}
+opts_knit$set(root.dir = here())
+tmap_options(check.and.fix = TRUE)
+#register_google(key = "YOUR_GOOGLE_API_KEY")
+```
+
+```{r}
+data <- read.csv('./Waivers.csv')
+addresses <- data$Address
+# Manual address fixes
+addresses <- gsub("118 , Poplar Woods Dr", "118 Poplar Woods Dr", 
+             gsub("480 Ehringhaus Dr, Rm 335", "480 Ehringhaus Dr", 
+             gsub("2218 Ponard Place", "2218 Pollard Place", 
+             gsub("1711 Martin Luther Ling Jr Blvd", "1711 Martin Luther King Jr Boulevard",
+             gsub("715 Afton Parlc Dr.", "715 Afton Park Dr.",
+             gsub("1712 Old Savarino Creek Circle SW", "1712 Creek Cir SW",
+             gsub("21 Mos Way", "21 Mo's Way",
+             gsub("2014 curriur place", "2014 Currier Place",
+             gsub("1410 Granville towers ln w", "125 W Franklin St",
+             gsub("706 Granville Towers Ln E", "125 W Franklin St",
+             gsub("4401Willow lake rd ", "4401 Willow Lake Rd",
+             gsub("480 Ehringhaus Drive Room336", "480 Ehringhaus Dr",
+             gsub("600 Call McCall Road", "600 Camp McCall Rd",
+             gsub("4479 Mebane Rodgers Road", "4479 Mebane Rogers Rd",
+             gsub("1100 W NC HWY 54 BYP", "1100 W North Carolina Hwy 54 Bypass",     
+             gsub("7024, Weirton Pl", "7024 Weirton Pl", addresses))))))))))))))))
+
+# Replace shortening
+addresses <- gsub("\\bpl\\b", "Place", 
+                  gsub("\\bblvd\\b", "Boulevard", 
+                       gsub("\\bct\\b", "Court", 
+                            gsub("\\brd\\b", "Road", 
+                                 gsub("\\.", "", 
+                                      gsub("\\bln\\b", "Lane", 
+                                           gsub("\\bst\\b", "Street", 
+                                                gsub("\\bjr\\b", "Junior", 
+                                                  gsub("\\bdr\\b", "Drive", addresses, ignore.case = TRUE), ignore.case = TRUE), ignore.case = TRUE), ignore.case = TRUE), ignore.case = TRUE), ignore.case = TRUE), ignore.case = TRUE), ignore.case = TRUE), ignore.case = TRUE)
+
+# Remove room number
+addresses <- gsub(",.*$", "", addresses)
+
+# Addresses to skip
+addresses_to_skip <- c("1911 Shady Lane", "1007 West Main Street", "209 North Street", "102 N Main Street", "5539 Peden Point Road", "1214 Broad Street", "1100 W North Carolina Hwy 54 Bypass")
+# Debugging
+indices_to_skip <- unique(unlist(sapply(addresses_to_skip, function(addr) grep(addr, addresses))))
+indices_to_skip
+addresses_to_geocode <- addresses[-indices_to_skip]
+geocoded_addresses <- geocode_OSM(addresses_to_geocode)
+
+# Unzip shape file from Census Reporter on Total Population of North Carolina
+#unzip("./Census Reporter.zip",
+#      exdir = "Census Reporter Shapefile", junkpaths = TRUE,
+#      overwrite = TRUE)
+
+# zipcode_geo <- st_read("./Census Reporter Shapefile Zip/acs2022_5yr_B01003_86000US28210.shp")
+# zipcode_geo <- filter(zipcode_geo, name != "North Carolina")
+
+county_geo <- st_read("./Census Reporter Shapefile County/acs2022_5yr_B01003_05000US37063.shp")
+county_geo <- filter(county_geo, name != "North Carolina")
+
+#NC State Plot
+#qtm(zipcode_geo) +
+#  tm_legend(show = FALSE)
+
+point_geo <- st_as_sf(geocoded_addresses,
+                      coords = c(x = "lon", y = "lat"),
+                      crs = 4326)
+
+my_results <- st_join(point_geo, county_geo, join = st_within)
+print(my_results[, c("query", "name", "geometry")])
+
+tm_shape(county_geo) +
+  tm_fill() + 
+  tm_shape(my_results) +
+  tm_bubbles(col = "red", size = 0.25)
+
+m <- leaflet() %>%
+  addTiles() %>%  # This adds the default OpenStreetMap tiles
+  setView(lng = -79.0339, lat = 35.9132, zoom = 12)  # Center on Chapel Hill, NC (example)
+
+# Display the map
+for(i in 1:nrow(geocoded_addresses)) {
+  m <- m %>% addMarkers(
+    lng = geocoded_addresses$lon[i], 
+    lat = geocoded_addresses$lat[i], 
+    popup = geocoded_addresses$address[i]
+  )
+}
+ # Heatmap
+m <- leaflet(geocoded_addresses) %>% 
+  addTiles() %>% 
+  setView(lng = mean(geocoded_addresses$lon), lat = mean(geocoded_addresses$lat), zoom = 10)
+
+# Add a heatmap layer with dynamic intensity based on the count log(count + 1) to account for 0
+m <- m %>% addHeatmap(
+  lng = ~lon, lat = ~lat, 
+  intensity = ~log1p(count), # Normalize by the max count to scale up the intensity of the highest occurrence
+  radius = 10, blur = 20,
+  max = 1, # Adjusting 'max' might be necessary depending on the visual outcome
+  gradient = c(`0.4` = "blue", `0.65` = "green", `0.9` = "red")
+)
+
+# Display the map
+m
+
+# Uncomment to save
+#saveWidget(m, 'my_map.html', selfcontained = TRUE)
+```
